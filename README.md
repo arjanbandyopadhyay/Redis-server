@@ -166,10 +166,3 @@ Refer to [Concepts,UseCases&Tests.md](Concepts,UseCases&Tests.md) for a detailed
 
 You can verify functionality interactively or via scripts. See the test examples in `Concepts,UseCases&Tests.md` or use the provided `test_all.sh` script for end‑to‑end validation.
 
----
-
-### The Core Team
-Selcuk Ata Aksoy 
-
-<span><i>Made at <a href='https://qwasar.io'>Qwasar SV -- Software Engineering School</a></i></span>
-<span><img alt='Qwasar SV -- Software Engineering School's Logo' src='https://storage.googleapis.com/qwasar-public/qwasar-logo_50x50.png' width='20px' /></span>

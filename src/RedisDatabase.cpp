@@ -25,6 +25,7 @@ bool RedisDatabase::flushAll() {
 void RedisDatabase::set(const std::string& key, const std::string& value) {
     std::lock_guard<std::mutex> lock(db_mutex);
     kv_store[key] = value;
+    expiry_map.erase(key);
 }
 
 bool RedisDatabase::get(const std::string& key, std::string& value) {

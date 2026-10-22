@@ -240,10 +240,13 @@ static std::string handleLset(const std::vector<std::string>& tokens, RedisDatab
 
 // Hash Operations
 static std::string handleHset(const std::vector<std::string>& tokens, RedisDatabase& db) {
-    if (tokens.size() < 4) 
-        return "-Error: HSET requires key, field and value\r\n";
-    db.hset(tokens[1], tokens[2], tokens[3]);
-    return ":1\r\n";
+    if (tokens.size() < 4 || tokens.size() % 2 != 0)
++        return "-Error: HSET requires key and one or more field/value pairs\r\n";
++    std::vector<std::pair<std::string, std::string>> pairs;
++    for (size_t i = 2; i + 1 < tokens.size(); i += 2)
++        pairs.emplace_back(tokens[i], tokens[i + 1]);
++    db.hmset(tokens[1], pairs);
++    return ":" + std::to_string(pairs.size()) + "\r\n";
 }
 
 static std::string handleHget(const std::vector<std::string>& tokens, RedisDatabase& db) {

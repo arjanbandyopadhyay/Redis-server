@@ -33,6 +33,39 @@ bool parseLong(const std::string& s, size_t pos, size_t end, long& out) {
 }
 } // namespace
 
+// Returns the length of the first complete command in buf (see header).
+long RedisCommandHandler::commandLength(const std::string& buf) {
+    if (buf.empty()) return 0;
+
+    // Inline command (e.g. "PING\r\n"): ends at the first '\n'.
+    if (buf[0] != '*') {
+        size_t nl = buf.find('\n');
+        if (nl == std::string::npos) return buf.size() > 64 * 1024 ? -1 : 0;
+        return static_cast<long>(nl + 1);
+    }
+
+    size_t crlf = buf.find("\r\n");
+    if (crlf == std::string::npos) return buf.size() > 32 ? -1 : 0;
+    long n;
+    if (!parseLong(buf, 1, crlf, n) || n < 0 || n > MAX_ELEMENTS) return -1;
+
+    size_t pos = crlf + 2;
+    for (long i = 0; i < n; ++i) {
+        if (pos >= buf.size()) return 0;
+        if (buf[pos] != '$') return -1;
+        crlf = buf.find("\r\n", pos);
+        if (crlf == std::string::npos) return (buf.size() - pos > 32) ? -1 : 0;
+        long len;
+        if (!parseLong(buf, pos + 1, crlf, len) || len < 0 || len > MAX_BULK_LEN) return -1;
+        pos = crlf + 2;
+        size_t ulen = static_cast<size_t>(len);
+        if (buf.size() < pos + ulen + 2) return 0;                      // body not fully received
+        if (buf[pos + ulen] != '\r' || buf[pos + ulen + 1] != '\n') return -1;
+        pos += ulen + 2;
+    }
+    return static_cast<long>(pos);
+}
+
 // RESP parser (never throws; returns an empty vector on malformed input).
 std::vector<std::string> parseRespCommand(const std::string &input) {
     std::vector<std::string> tokens;

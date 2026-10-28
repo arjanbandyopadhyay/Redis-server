@@ -4,6 +4,7 @@
 #include <sstream>
 #include <algorithm>
 #include <iterator>
+#include <cstdio>
 
 // Singleton accessor
 RedisDatabase& RedisDatabase::getInstance() {
@@ -346,101 +347,134 @@ bool RedisDatabase::hmset(const std::string& key, const std::vector<std::pair<st
 }
 
 /*
-Very simple text based persistance: each line encodes a record
+Persistence format (version 2). Every string is LENGTH-PREFIXED, so keys/values may
+contain spaces, newlines, ':' or be empty.
 
-Memory -> File - dump()
-File -> Memory - load()
+    MYRDB2\n
+    K <key> <value>                       string
+    L <key> <count> <item>...             list
+    H <key> <count> <field> <value>...    hash
+    E <key> <ms_remaining>                TTL of <key>
 
-K = Key Value
-L = List
-H= Hash
+    <string> := <byte-length>:<bytes>
 */
-bool RedisDatabase::dump(const std::string& filename) {
-    std::lock_guard<std::mutex> lock(db_mutex);
-    std::ofstream ofs(filename, std::ios::binary);
-    if (!ofs) return false;
+namespace {
+const char* DUMP_MAGIC = "MYRDB2";
+const size_t MAX_STR = 512UL * 1024 * 1024;
 
-    for (const auto& kv: kv_store) {
-        ofs << "K " << kv.first << " " << kv.second << "\n";
-    }
-    for (const auto& kv : list_store) {
-        ofs << "L " << kv.first;
-        for (const auto& item : kv.second)
-            ofs << " " << item;
-        ofs << "\n";
-    }
-    for (const auto& kv : hash_store) {
-        ofs << "H " << kv.first;
-        for (const auto& field_val : kv.second) 
-            ofs << " " << field_val.first << ":" << field_val.second;
-        ofs << "\n";
-    }
-    return true;
+void writeStr(std::ostream& os, const std::string& s) {
+    os << s.size() << ':';
+    os.write(s.data(), static_cast<std::streamsize>(s.size()));
+    os << ' ';
 }
 
-/*
-Key-Value (K)
-kv_store["name"] = "Alice";
-kv_store["city"] = "Berlin";
+bool readStr(std::istream& is, std::string& out) {
+    size_t n;
+    char c;
+    if (!(is >> n)) return false;
+    if (!is.get(c) || c != ':') return false;
+    if (n > MAX_STR) return false;
+    out.resize(n);
+    if (n && !is.read(&out[0], static_cast<std::streamsize>(n))) return false;
+    return true;
+}
+} // namespace
 
-List (L)
-list_store["fruits"] = {"apple", "banana", "orange"};
-list_store["colors"] = {"red", "green", "blue"};
-
-Hash (H)
-hash_store["user:100"] = {
-    {"name", "Bob"},
-    {"age", "30"},
-    {"email", "bob@example.com"}
-};
-
-hash_store["user:200"] = {
-    {"name", "Eve"},
-    {"age", "25"},
-    {"email", "eve@example.com"}
-};
-*/
-bool RedisDatabase::load(const std::string& filename) {
+bool RedisDatabase::dump(const std::string& filename) {
     std::lock_guard<std::mutex> lock(db_mutex);
+    purgeExpired();
+
+    // Write to a temp file and rename: a crash mid-dump can't destroy the old dump.
+    const std::string tmp = filename + ".tmp";
+    {
+        std::ofstream ofs(tmp, std::ios::binary | std::ios::trunc);
+        if (!ofs) return false;
+
+        ofs << DUMP_MAGIC << '\n';
+        for (const auto& kv : kv_store) {
+            ofs << "K "; writeStr(ofs, kv.first); writeStr(ofs, kv.second); ofs << '\n';
+        }
+        for (const auto& kv : list_store) {
+            ofs << "L "; writeStr(ofs, kv.first);
+            ofs << kv.second.size() << ' ';
+            for (const auto& item : kv.second) writeStr(ofs, item);
+            ofs << '\n';
+        }
+        for (const auto& kv : hash_store) {
+            ofs << "H "; writeStr(ofs, kv.first);
+            ofs << kv.second.size() << ' ';
+            for (const auto& fv : kv.second) { writeStr(ofs, fv.first); writeStr(ofs, fv.second); }
+            ofs << '\n';
+        }
+        auto now = std::chrono::steady_clock::now();
+        for (const auto& e : expiry_map) {
+            long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(e.second - now).count();
+            if (ms < 0) ms = 0;
+            ofs << "E "; writeStr(ofs, e.first); ofs << ms << '\n';
+        }
+        ofs.flush();
+        if (!ofs) { std::remove(tmp.c_str()); return false; }
+    }
+    return std::rename(tmp.c_str(), filename.c_str()) == 0;
+}
+
+bool RedisDatabase::load(const std::string& filename) {
     std::ifstream ifs(filename, std::ios::binary);
     if (!ifs) return false;
 
-    kv_store.clear();
-    list_store.clear();
-    hash_store.clear();
+    std::string magic;
+    if (!std::getline(ifs, magic) || magic != DUMP_MAGIC) return false;   // unknown / old format
 
-    std::string line;
-    while (std::getline(ifs, line)) {
-        std::istringstream iss(line);
-        char type;
-        iss >> type;
+    // Parse into temporaries first: a corrupt file must not leave a half-loaded DB.
+    decltype(kv_store) kv;
+    decltype(list_store) lists;
+    decltype(hash_store) hashes;
+    decltype(expiry_map) expiries;
+    auto now = std::chrono::steady_clock::now();
+
+    char type;
+    while (ifs >> type) {
+        std::string key;
+        if (!readStr(ifs, key)) return false;
+
         if (type == 'K') {
-            std::string key, value;
-            iss >> key >> value;
-            kv_store[key] = value;
+            std::string value;
+            if (!readStr(ifs, value)) return false;
+            kv[key] = std::move(value);
         } else if (type == 'L') {
-            std::string key;
-            iss >> key;
-            std::string item;
-            std::vector<std::string> list;
-            while (iss >> item)
-                list.push_back(item);
-            list_store[key] = list;
-        } else if (type == 'H') {
-            std::string key;
-            iss >> key;
-            std::unordered_map<std::string, std::string> hash;
-            std::string pair;
-            while (iss >> pair) {
-                auto pos = pair.find(':');
-                if (pos != std::string::npos) {
-                    std::string field = pair.substr(0, pos);
-                    std::string value = pair.substr(pos+1);
-                    hash[field] = value;
-                }
+            size_t count;
+            if (!(ifs >> count) || count > MAX_STR) return false;
+            std::vector<std::string> items;
+            for (size_t i = 0; i < count; ++i) {
+                std::string item;
+                if (!readStr(ifs, item)) return false;
+                items.push_back(std::move(item));
             }
-            hash_store[key] = hash;
+            lists[key] = std::move(items);
+        } else if (type == 'H') {
+            size_t count;
+            if (!(ifs >> count) || count > MAX_STR) return false;
+            std::unordered_map<std::string, std::string> h;
+            for (size_t i = 0; i < count; ++i) {
+                std::string field, value;
+                if (!readStr(ifs, field) || !readStr(ifs, value)) return false;
+                h[std::move(field)] = std::move(value);
+            }
+            hashes[key] = std::move(h);
+        } else if (type == 'E') {
+            long long ms;
+            if (!(ifs >> ms)) return false;
+            expiries[key] = now + std::chrono::milliseconds(ms);
+        } else {
+            return false;
         }
     }
+    if (!ifs.eof()) return false;
+
+    std::lock_guard<std::mutex> lock(db_mutex);
+    kv_store.swap(kv);
+    list_store.swap(lists);
+    hash_store.swap(hashes);
+    expiry_map.swap(expiries);
     return true;
 }

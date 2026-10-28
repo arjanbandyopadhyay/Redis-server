@@ -14,45 +14,60 @@
 // PING
 // TEST
 
+namespace {
+constexpr long MAX_ELEMENTS = 1024 * 1024;          // max args per command
+constexpr long MAX_BULK_LEN = 512L * 1024 * 1024;   // max bytes per argument
+
+// Parse a decimal integer in s[pos, end) WITHOUT throwing (unlike std::stoi).
+bool parseLong(const std::string& s, size_t pos, size_t end, long& out) {
+    if (pos >= end || end - pos > 12) return false;
+    bool neg = false;
+    if (s[pos] == '-') { neg = true; ++pos; if (pos >= end) return false; }
+    long v = 0;
+    for (; pos < end; ++pos) {
+        if (s[pos] < '0' || s[pos] > '9') return false;
+        v = v * 10 + (s[pos] - '0');
+    }
+    out = neg ? -v : v;
+    return true;
+}
+} // namespace
+
+// RESP parser (never throws; returns an empty vector on malformed input).
 std::vector<std::string> parseRespCommand(const std::string &input) {
     std::vector<std::string> tokens;
     if (input.empty()) return tokens;
 
-    // If it doesnt strart with '*', fallback to splitting by whitespace.
-    if (input[0] != '*') { 
+    // If it doesnt start with '*', fallback to splitting by whitespace.
+    if (input[0] != '*') {
         std::istringstream iss(input);
         std::string token;
-        while (iss >> token) 
+        while (iss >> token)
             tokens.push_back(token);
         return tokens;
     }
 
-    size_t pos = 0;
-    // Expect '*' followed by number of elements
-    if (input[pos] != '*') return tokens;
-    pos++; // skip '*'
+    size_t crlf = input.find("\r\n", 1);
+    long numElements;
+    if (crlf == std::string::npos || !parseLong(input, 1, crlf, numElements)
+        || numElements < 0 || numElements > MAX_ELEMENTS)
+        return tokens;
+    size_t pos = crlf + 2;
 
-    // crlf = Carriage Return (\r), Line Feed (\n)
-    size_t crlf = input.find("\r\n", pos);
-    if (crlf == std::string::npos) return tokens;
-
-    int numElements = std::stoi(input.substr(pos, crlf - pos));
-    pos = crlf + 2;
-
-    for (int i = 0; i < numElements; i++) {
-        if (pos >= input.size() || input[pos] != '$') break; // format error
-        pos++; // skip '$'
-
+    for (long i = 0; i < numElements; i++) {
+        if (pos >= input.size() || input[pos] != '$') break;
         crlf = input.find("\r\n", pos);
-        if (crlf == std::string::npos) break;
-        int len = std::stoi(input.substr(pos, crlf - pos));
+        long len;
+        if (crlf == std::string::npos || !parseLong(input, pos + 1, crlf, len)
+            || len < 0 || len > MAX_BULK_LEN) break;
         pos = crlf + 2;
-
-        if (pos + len > input.size()) break;
-        std::string token = input.substr(pos, len);
-        tokens.push_back(token);
-        pos += len + 2; // skip token and CRLF
+        size_t ulen = static_cast<size_t>(len);
+        if (pos + ulen > input.size()) break;
+        tokens.emplace_back(input, pos, ulen);
+        pos += ulen + 2;
     }
+    // A truncated / malformed command must not be executed half-parsed.
+    if (static_cast<long>(tokens.size()) != numElements) tokens.clear();
     return tokens;
 }
 

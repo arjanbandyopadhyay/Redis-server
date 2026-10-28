@@ -25,6 +25,10 @@ bool RedisDatabase::flushAll() {
 // Key/Value Operations
 void RedisDatabase::set(const std::string& key, const std::string& value) {
     std::lock_guard<std::mutex> lock(db_mutex);
+    // Like real Redis: SET overwrites a key of ANY type and clears its TTL.
+    list_store.erase(key);
+    hash_store.erase(key);
+    expiry_map.erase(key);
     kv_store[key] = value;
 }
 

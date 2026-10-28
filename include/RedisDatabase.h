@@ -5,6 +5,7 @@
 #include <mutex>
 #include <unordered_map>
 #include <vector>
+#include <deque>
 #include <chrono>
 
 class RedisDatabase {
@@ -59,7 +60,7 @@ private:
 
     std::mutex db_mutex;
     std::unordered_map<std::string, std::string> kv_store;
-    std::unordered_map<std::string, std::vector<std::string>> list_store;
+    std::unordered_map<std::string, std::deque<std::string>> list_store;   // deque: O(1) push/pop at BOTH ends
     std::unordered_map<std::string, std::unordered_map<std::string, std::string>> hash_store;
 
     std::unordered_map<std::string, std::chrono::steady_clock::time_point> expiry_map;

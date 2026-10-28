@@ -153,7 +153,7 @@ std::vector<std::string> RedisDatabase::lget(const std::string& key) {
     std::lock_guard<std::mutex> lock(db_mutex);
     auto it = list_store.find(key);
     if (it != list_store.end()) {
-        return it->second; 
+        return std::vector<std::string>(it->second.begin(), it->second.end());
     }
     return {}; 
 }
@@ -168,7 +168,7 @@ ssize_t RedisDatabase::llen(const std::string& key) {
 
 void RedisDatabase::lpush(const std::string& key, const std::string& value) {
     std::lock_guard<std::mutex> lock(db_mutex);
-    list_store[key].insert(list_store[key].begin(), value);
+    list_store[key].push_front(value);
 }
 
 void RedisDatabase::rpush(const std::string& key, const std::string& value) {
@@ -181,7 +181,7 @@ bool RedisDatabase::lpop(const std::string& key, std::string& value) {
     auto it = list_store.find(key);
     if (it != list_store.end() && !it->second.empty()) {
         value = it->second.front();
-        it->second.erase(it->second.begin());
+        it->second.pop_front();
         return true;
     }
     return false;
@@ -230,7 +230,7 @@ int RedisDatabase::lrem(const std::string& key, int count, const std::string& va
                 --fwdIter;
                 fwdIter = lst.erase(fwdIter);
                 ++removed;
-                riter = std::reverse_iterator<std::vector<std::string>::iterator>(fwdIter);
+                riter = std::reverse_iterator<std::deque<std::string>::iterator>(fwdIter);
             } else {
                 ++riter;
             }
@@ -448,7 +448,7 @@ bool RedisDatabase::load(const std::string& filename) {
         } else if (type == 'L') {
             size_t count;
             if (!(ifs >> count) || count > MAX_STR) return false;
-            std::vector<std::string> items;
+            std::deque<std::string> items;
             for (size_t i = 0; i < count; ++i) {
                 std::string item;
                 if (!readStr(ifs, item)) return false;

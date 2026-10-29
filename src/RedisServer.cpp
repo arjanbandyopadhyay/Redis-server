@@ -10,6 +10,7 @@
 #include <thread>
 #include <cstring>
 #include <signal.h>
+#include <string>
 
 // Global pointer for signal handling
 static RedisServer* globalServer = nullptr;
@@ -84,35 +85,39 @@ void RedisServer::run() {
 
         threads.emplace_back([client_socket, &cmdHandler](){
             char buffer[4096];
-+            std::string pending;       
-+            bool alive = true;
-            while (true) {
+            std::string pending;        // bytes received but not yet processed
+            bool alive = true;
+            while (alive) {
                 int bytes = recv(client_socket, buffer, sizeof(buffer), 0);
                 if (bytes <= 0) break;
                 pending.append(buffer, bytes);
-+
-+                std::string response;
-+                while (true) {
-+                    long len = RedisCommandHandler::commandLength(pending);
-+                    if (len == 0) break;                       
-+                    if (len < 0) {                            
-+                        response += "-ERR Protocol error\r\n";
-+                        alive = false;
-+                        break;
-+                    }
-+                    response += cmdHandler.processCommand(pending.substr(0, len));
-+                    pending.erase(0, len);
-+                }
-+
-+                size_t sent = 0;
-+                while (sent < response.size()) {
-+                    ssize_t n = send(client_socket, response.data() + sent,
-+                                     response.size() - sent, MSG_NOSIGNAL);
-+                    if (n <= 0) { alive = false; break; }
-+                    sent += static_cast<size_t>(n);
-+                }
-             }
-             close(client_socket);
+
+                // Extract every COMPLETE command in the buffer (supports pipelining
+                // and commands split across several recv() calls).
+                std::string response;
+                while (true) {
+                    long len = RedisCommandHandler::commandLength(pending);
+                    if (len == 0) break;                       // need more data
+                    if (len < 0) {                             // malformed input
+                        response += "-ERR Protocol error\r\n";
+                        alive = false;
+                        break;
+                    }
+                    response += cmdHandler.processCommand(pending.substr(0, len));
+                    pending.erase(0, len);
+                }
+
+                // send() may write only part of the data; loop until done.
+                // MSG_NOSIGNAL: a client that disconnects must not kill the server with SIGPIPE.
+                size_t sent = 0;
+                while (sent < response.size()) {
+                    ssize_t n = send(client_socket, response.data() + sent,
+                                     response.size() - sent, MSG_NOSIGNAL);
+                    if (n <= 0) { alive = false; break; }
+                    sent += static_cast<size_t>(n);
+                }
+            }
+            close(client_socket);
         });
     }
     
@@ -120,7 +125,7 @@ void RedisServer::run() {
         if (t.joinable()) t.join();
     }
 
-    
+    // Before shutdown, persist the database
     if (RedisDatabase::getInstance().dump("dump.my_rdb"))
         std::cout << "Database Dumped to dump.my_rdb\n";
     else 

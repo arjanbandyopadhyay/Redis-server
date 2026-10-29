@@ -25,10 +25,6 @@ bool RedisDatabase::flushAll() {
 void RedisDatabase::set(const std::string& key, const std::string& value) {
     std::lock_guard<std::mutex> lock(db_mutex);
     kv_store[key] = value;
-    list_store.erase(key);
-    hash_store.erase(key);
-   expiry_map.erase(key);
-    expiry_map.erase(key);
 }
 
 bool RedisDatabase::get(const std::string& key, std::string& value) {
@@ -382,6 +378,28 @@ bool RedisDatabase::dump(const std::string& filename) {
     return true;
 }
 
+/*
+Key-Value (K)
+kv_store["name"] = "Alice";
+kv_store["city"] = "Berlin";
+
+List (L)
+list_store["fruits"] = {"apple", "banana", "orange"};
+list_store["colors"] = {"red", "green", "blue"};
+
+Hash (H)
+hash_store["user:100"] = {
+    {"name", "Bob"},
+    {"age", "30"},
+    {"email", "bob@example.com"}
+};
+
+hash_store["user:200"] = {
+    {"name", "Eve"},
+    {"age", "25"},
+    {"email", "eve@example.com"}
+};
+*/
 bool RedisDatabase::load(const std::string& filename) {
     std::lock_guard<std::mutex> lock(db_mutex);
     std::ifstream ifs(filename, std::ios::binary);

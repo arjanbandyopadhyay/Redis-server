@@ -83,36 +83,16 @@ void RedisServer::run() {
         }
 
         threads.emplace_back([client_socket, &cmdHandler](){
-            char buffer[4096];
-+            std::string pending;       
-+            bool alive = true;
+            char buffer[1024];
             while (true) {
-                int bytes = recv(client_socket, buffer, sizeof(buffer), 0);
+                memset(buffer, 0, sizeof(buffer));
+                int bytes = recv(client_socket, buffer, sizeof(buffer) - 1, 0);
                 if (bytes <= 0) break;
-                pending.append(buffer, bytes);
-+
-+                std::string response;
-+                while (true) {
-+                    long len = RedisCommandHandler::commandLength(pending);
-+                    if (len == 0) break;                       
-+                    if (len < 0) {                            
-+                        response += "-ERR Protocol error\r\n";
-+                        alive = false;
-+                        break;
-+                    }
-+                    response += cmdHandler.processCommand(pending.substr(0, len));
-+                    pending.erase(0, len);
-+                }
-+
-+                size_t sent = 0;
-+                while (sent < response.size()) {
-+                    ssize_t n = send(client_socket, response.data() + sent,
-+                                     response.size() - sent, MSG_NOSIGNAL);
-+                    if (n <= 0) { alive = false; break; }
-+                    sent += static_cast<size_t>(n);
-+                }
-             }
-             close(client_socket);
+                std::string request(buffer, bytes);
+                std::string response = cmdHandler.processCommand(request);
+                send(client_socket, response.c_str(), response.size(), 0);
+            }
+            close(client_socket);
         });
     }
     
@@ -120,7 +100,7 @@ void RedisServer::run() {
         if (t.joinable()) t.join();
     }
 
-    
+    // Before shutdown, persist the database
     if (RedisDatabase::getInstance().dump("dump.my_rdb"))
         std::cout << "Database Dumped to dump.my_rdb\n";
     else 

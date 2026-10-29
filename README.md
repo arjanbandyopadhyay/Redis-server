@@ -222,7 +222,7 @@ Earlier correctness fixes covered return values for `DEL` and complete cleanup i
   - 10 concurrent clients, 100,000 requests per test, `-P 1` means no pipelining (one request in flight per client).
 - **Runs:** 5 runs per configuration; the **median** is reported.
 - **Baseline:** real Redis 8.0.5 on the same machine with snapshots off (`save ""`).
-- **Environment:** Windows with WSL2 (Ubuntu); server built with `g++ 15.2 -O2`. Machine: `<CPU model, cores, RAM>`.
+- **Environment:** Windows with WSL2 (Ubuntu); server built with `g++ 15.2 -O2`. Machine: `lscpu | grep "Model name" and free -h`.
 
 ### Results: compared with Redis
 
